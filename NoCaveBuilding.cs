@@ -5,6 +5,7 @@
  */
 
 using Facepunch;
+using Newtonsoft.Json;
 using Oxide.Core;
 using Rust;
 using System.Collections.Generic;
@@ -14,15 +15,80 @@ using UnityEngine;
 
 namespace Oxide.Plugins
 {
-    [Info("No Cave Building", "VisEntities", "1.0.0")]
+    [Info("No Cave Building", "VisEntities", "1.1.0")]
     [Description("Prevents players from building inside caves.")]
     public class NoCaveBuilding : RustPlugin
     {
         #region Fields
 
         private static NoCaveBuilding _plugin;
+        private static Configuration _config;
 
         #endregion Fields
+
+        #region Configuration
+
+        private class Configuration
+        {
+            [JsonProperty("Version")]
+            public string Version { get; set; }
+
+            [JsonProperty("Detection Radius")]
+            public float DetectionRadius { get; set; }
+
+            [JsonProperty("Prevent Building In Caves")]
+            public bool PreventBuildingInCaves { get; set; }
+
+            [JsonProperty("Prevent Building Under Rock Formations")]
+            public bool PreventBuildingUnderRockFormations { get; set; }
+        }
+
+        protected override void LoadConfig()
+        {
+            base.LoadConfig();
+            _config = Config.ReadObject<Configuration>();
+
+            if (string.Compare(_config.Version, Version.ToString()) < 0)
+                UpdateConfig();
+
+            SaveConfig();
+        }
+
+        protected override void LoadDefaultConfig()
+        {
+            _config = GetDefaultConfig();
+        }
+
+        protected override void SaveConfig()
+        {
+            Config.WriteObject(_config, true);
+        }
+
+        private void UpdateConfig()
+        {
+            PrintWarning("Config changes detected! Updating...");
+
+            Configuration defaultConfig = GetDefaultConfig();
+
+            if (string.Compare(_config.Version, "1.0.0") < 0)
+                _config = defaultConfig;
+
+            PrintWarning("Config update complete! Updated from version " + _config.Version + " to " + Version.ToString());
+            _config.Version = Version.ToString();
+        }
+
+        private Configuration GetDefaultConfig()
+        {
+            return new Configuration
+            {
+                Version = Version.ToString(),
+                DetectionRadius = 10f,
+                PreventBuildingInCaves = true,
+                PreventBuildingUnderRockFormations = false
+            };
+        }
+
+        #endregion Configuration
 
         #region Oxide Hooks
 
@@ -34,6 +100,7 @@ namespace Oxide.Plugins
 
         private void Unload()
         {
+            _config = null;
             _plugin = null;
         }
 
@@ -49,9 +116,15 @@ namespace Oxide.Plugins
             if (PermissionUtil.HasPermission(player, PermissionUtil.IGNORE))
                 return null;
 
-            if (InsideCave(target.position, 5f))
+            if (_config.PreventBuildingInCaves && InsideRestrictedArea(target.position, _config.DetectionRadius, "cave"))
             {
-                SendMessage(player, Lang.CannotBuildInCave);
+                MessagePlayer(player, Lang.CannotBuildInCave);
+                return true;
+            }
+
+            if (_config.PreventBuildingUnderRockFormations && InsideRestrictedArea(target.position, _config.DetectionRadius, "formation"))
+            {
+                MessagePlayer(player, Lang.CannotBuildUnderRockFormation);
                 return true;
             }
 
@@ -88,16 +161,17 @@ namespace Oxide.Plugins
         
         #region Helper Functions
 
-        public static bool InsideCave(Vector3 position, float radius)
+        public static bool InsideRestrictedArea(Vector3 position, float radius, string restrictionType)
         {
             List<Collider> colliders = Pool.Get<List<Collider>>();
             Vis.Colliders(position, radius, colliders, Layers.Mask.World, QueryTriggerInteraction.Ignore);
-            
+
             bool result = false;
 
             foreach (Collider collider in colliders)
             {
-                if (collider.name.Contains("cave", CompareOptions.OrdinalIgnoreCase))
+                if ((restrictionType == "cave" && collider.name.Contains("cave", CompareOptions.OrdinalIgnoreCase)) ||
+                    (restrictionType == "formation" && collider.name.Contains("formation", CompareOptions.OrdinalIgnoreCase)))
                 {
                     result = true;
                     break;
@@ -115,6 +189,7 @@ namespace Oxide.Plugins
         private class Lang
         {
             public const string CannotBuildInCave = "CannotBuildInCave";
+            public const string CannotBuildUnderRockFormation = "CannotBuildUnderRockFormation";
         }
 
         protected override void LoadDefaultMessages()
@@ -122,16 +197,24 @@ namespace Oxide.Plugins
             lang.RegisterMessages(new Dictionary<string, string>
             {
                 [Lang.CannotBuildInCave] = "You cannot build inside caves.",
+                [Lang.CannotBuildUnderRockFormation] = "You cannot build under rock formations."
             }, this, "en");
         }
 
-        private void SendMessage(BasePlayer player, string messageKey, params object[] args)
+        private static string GetMessage(BasePlayer player, string messageKey, params object[] args)
         {
-            string message = lang.GetMessage(messageKey, this, player.UserIDString);
+            string message = _plugin.lang.GetMessage(messageKey, _plugin, player.UserIDString);
+
             if (args.Length > 0)
                 message = string.Format(message, args);
 
-            SendReply(player, message);
+            return message;
+        }
+
+        public static void MessagePlayer(BasePlayer player, string messageKey, params object[] args)
+        {
+            string message = GetMessage(player, messageKey, args);
+            _plugin.SendReply(player, message);
         }
 
         #endregion Localization
